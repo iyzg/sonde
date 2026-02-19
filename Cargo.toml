@@ -1,0 +1,12 @@
+[package]
+name = "sonde"
+version = "0.1.0"
+edition = "2021"
+description = "A tiny CLI for prioritizing tasks as a stochastic decision process"
+license = "MIT"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+regex = "1"
+chrono = "0.4"
+dirs = "6"
