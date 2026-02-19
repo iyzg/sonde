@@ -93,35 +93,82 @@ fn top_task_idx(tasks: &[Task]) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
-fn start_timer() {
+// timer file format:
+//   running: "<accumulated_secs> <start_timestamp>"
+//   paused:  "<accumulated_secs>"
+
+fn read_timer() -> Option<(i64, Option<i64>)> {
+    let path = timer_file();
+    if !path.exists() {
+        return None;
+    }
+    let content = fs::read_to_string(&path).ok()?;
+    let parts: Vec<&str> = content.trim().split_whitespace().collect();
+    let acc: i64 = parts.first()?.parse().ok()?;
+    let start: Option<i64> = parts.get(1).and_then(|s| s.parse().ok());
+    Some((acc, start))
+}
+
+fn write_timer(acc: i64, start: Option<i64>) {
+    let content = match start {
+        Some(s) => format!("{acc} {s}"),
+        None => format!("{acc}"),
+    };
+    fs::write(timer_file(), content).unwrap();
+}
+
+fn start_timer() -> bool {
     let now = Local::now().timestamp();
-    fs::write(timer_file(), now.to_string()).unwrap();
+    match read_timer() {
+        None => {
+            write_timer(0, Some(now));
+            true
+        }
+        Some((acc, None)) => {
+            write_timer(acc, Some(now));
+            true
+        }
+        Some((_, Some(_))) => false, // already running
+    }
+}
+
+fn pause_timer() -> bool {
+    match read_timer() {
+        Some((acc, Some(start))) => {
+            let now = Local::now().timestamp();
+            write_timer(acc + (now - start), None);
+            true
+        }
+        _ => false,
+    }
 }
 
 fn stop_timer() -> Option<f64> {
-    let path = timer_file();
-    if !path.exists() {
-        return None;
-    }
-    let start: i64 = fs::read_to_string(&path).unwrap().trim().parse().unwrap();
-    let elapsed = Local::now().timestamp() - start;
-    fs::remove_file(path).unwrap();
-    Some(elapsed as f64 / 3600.0)
+    let (acc, start) = read_timer()?;
+    let total = acc + start.map(|s| Local::now().timestamp() - s).unwrap_or(0);
+    fs::remove_file(timer_file()).unwrap();
+    Some(total as f64 / 3600.0)
+}
+
+fn total_elapsed_secs() -> Option<i64> {
+    let (acc, start) = read_timer()?;
+    Some(acc + start.map(|s| Local::now().timestamp() - s).unwrap_or(0))
 }
 
 fn elapsed_str() -> Option<String> {
-    let path = timer_file();
-    if !path.exists() {
-        return None;
-    }
-    let start: i64 = fs::read_to_string(&path).ok()?.trim().parse().ok()?;
-    let secs = Local::now().timestamp() - start;
+    let secs = total_elapsed_secs()?;
+    let paused = read_timer().map(|(_, s)| s.is_none()).unwrap_or(false);
     let hours = secs / 3600;
     let mins = (secs % 3600) / 60;
-    if hours > 0 {
-        Some(format!("{hours}h {mins}m"))
+    let time = if hours > 0 {
+        format!("{hours}h {mins}m")
     } else {
-        Some(format!("{mins}m"))
+        format!("{mins}m")
+    };
+    if paused {
+        Some(format!("{time} paused"))
+    } else {
+        Some(time)
     }
 }
 
@@ -160,8 +207,10 @@ enum Command {
     },
     /// Show the highest priority task (default when no command given)
     Show,
-    /// Start the timer on the current top task
+    /// Start (or resume) the timer on the current top task
     Start,
+    /// Pause the timer
+    Pause,
     /// Mark the top task as completed. Uses timer if running, otherwise pass -r
     Next {
         /// Actual time spent in hours (auto-filled if timer is running)
@@ -225,8 +274,20 @@ fn main() {
             println!("[command] start");
             let tasks = load_tasks();
             if let Some(i) = top_task_idx(&tasks) {
-                start_timer();
-                println!("→ timing: {}", tasks[i].text);
+                if start_timer() {
+                    println!("→ timing: {}", tasks[i].text);
+                } else {
+                    println!("[error] timer already running");
+                }
+            }
+        }
+        Some(Command::Pause) => {
+            println!("[command] pause");
+            if pause_timer() {
+                let tasks = load_tasks();
+                show_top(&tasks);
+            } else {
+                println!("[error] no timer running");
             }
         }
         Some(Command::Next { real_time, reason }) => {
